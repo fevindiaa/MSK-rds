@@ -1,0 +1,158 @@
+name: MSK Provision & Kafka CI/CD
+
+on:
+  push:
+    branches: [dev, staging, main]
+
+env:
+  AWS_REGION: eu-north-1
+  SECRET_ID: msk-client-cert
+
+jobs:
+  provision-msk:
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.7
+
+      - name: Terraform Init & Apply (MSK)
+        run: |
+          cd terraform-msk/${{ github.ref_name }}
+          terraform init \
+          -backend-config="bucket=terraformstatee" \
+          -backend-config="key=msk/${{ steps.env.outputs.env_dir }}/terraform.tfstate" \
+          -backend-config="region=eu-north-1"
+           terraform apply -auto-approve
+
+  apply-kafka:
+    needs: provision-msk
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.7
+
+      - name: Fetch TLS certs from Secrets Manager
+        run: |
+          mkdir -p terraform-kafka/${{ github.ref_name }}/certs
+          SECRET=$(aws secretsmanager get-secret-value --secret-id $SECRET_ID --query SecretString --output text)
+          echo "$SECRET" | jq -r .cert > terraform-kafka/${{ github.ref_name }}/certs/client.crt
+          echo "$SECRET" | jq -r .key > terraform-kafka/${{ github.ref_name }}/certs/client.key
+          echo "$SECRET" | jq -r .ca   > terraform-kafka/${{ github.ref_name }}/certs/ca.pem
+
+      - name: Terraform Init & Apply (Kafka)
+        run: |
+          cd terraform-kafka/${{ github.ref_name }}
+          terraform init
+          terraform apply -auto-approve
+          
+  setup-aws-eks:
+    name: Setup AWS and EKS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'latest'
+
+      - name: Setup kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig --name kafka-cluster --region $AWS_REGION
+          mkdir -p $HOME/.kube
+          cp ~/.kube/config kubeconfig
+          
+      - name: Save kubeconfig as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubeconfig
+          path: kubeconfig
+
+  apply-terraform-job:
+    name: Apply Terraform Kubernetes Job
+    runs-on: ubuntu-latest
+    needs: setup-aws-eks
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Download kubeconfig artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kubeconfig
+          path: ~/.kube
+
+      - name: Set KUBECONFIG environment variable
+        run: echo "KUBECONFIG=$HOME/.kube/kubeconfig" >> $GITHUB_ENV
+
+      - name: Create AWS Secret in Kubernetes
+        run: |
+          kubectl delete secret aws-credentials --ignore-not-found
+          kubectl create secret generic aws-credentials \
+            --from-literal=aws_access_key_id=${{ secrets.AWS_ACCESS_KEY_ID }} \
+            --from-literal=aws_secret_access_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Delete existing Job (if any)
+        run: |
+          kubectl delete job terraform-rds-secret-job || true
+
+      - name: Apply Terraform Kubernetes Job
+        run: |
+          kubectl apply -f k8s/rds-service-account.yaml
+          kubectl apply -f k8s/rds-config-map.yaml
+          kubectl apply -f k8s/terraform-rds-secret-job.yaml
+          kubectl get all
+
+      - name: Wait for Job completion
+        run: |
+          kubectl wait --for=condition=complete --timeout=1200s job/terraform-rds-secret-job
+
+      - name: Get logs from Job
+        run: |
+          POD_NAME=$(kubectl get pods --selector=job-name=terraform-rds-secret-job -o jsonpath='{.items[0].metadata.name}')
+          kubectl logs $POD_NAME
