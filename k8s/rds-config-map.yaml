@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: terraform-rds-config
+data:
+  main.tf: |
+    provider "aws" {
+      region = var.aws_region
+    }
+
+    variable "aws_region" {
+      default = "eu-north-1"
+    }
+
+    variable "db_username" {
+      type = string
+    }
+
+    variable "db_password" {
+      type = string
+      sensitive = true
+    }
+
+    variable "db_identifier" {
+      type = string
+    }
+
+    resource "aws_db_instance" "default" {
+      allocated_storage    = 20
+      engine               = "postgres"
+      # engine_version       = "13.7"
+      instance_class       = "db.t3.micro"
+      db_name              = "mydatabase"
+      username             = var.db_username
+      password             = var.db_password
+      # db_subnet_group_name = "subnet-0b0cc2d8b401eae1e" # adjust to your subnet group
+      # skip_final_snapshot  = true
+      # publicly_accessible  = false
+      identifier           = var.db_identifier
+    }
+
+    output "endpoint" {
+      value = aws_db_instance.default.endpoint
+    }
+
+    output "username" {
+      value = aws_db_instance.default.username
+      sensitive = true
+    }
+
+    output "password" {
+      value = aws_db_instance.default.password
+      sensitive = true
+    }
+
+---
