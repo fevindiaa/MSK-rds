@@ -6,7 +6,7 @@ on:
 
 env:
   AWS_REGION: eu-north-1
-  SECRET_ID: msk-client-cert
+  SECRET_ID: msk-client-secret
 
 jobs:
   provision-msk:
@@ -103,7 +103,7 @@ jobs:
           ssl.key.location=/etc/kafka/secrets/client.key
           EOF
 
-          kubectl create secret generic kafka-client-cert \
+          kubectl create secret generic $SECRET_ID  \
             --namespace kafka \
             --from-file=ca.pem \
             --from-file=client.crt \
