@@ -1,0 +1,68 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kafka-topic-operator
+  namespace: kafka
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: kafka-controller
+              image: bitnami/kafka:latest
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  apt-get update && apt-get install -y wget curl jq && \
+                  wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq && \
+                  chmod +x /usr/bin/yq
+
+                  echo "security.protocol=SSL" > /etc/kafka/secrets/client.properties
+                  echo "ssl.ca.location=/etc/kafka/secrets/ca.pem" >> /etc/kafka/secrets/client.properties
+                  echo "ssl.certificate.location=/etc/kafka/secrets/client.crt" >> /etc/kafka/secrets/client.properties
+                  echo "ssl.key.location=/etc/kafka/secrets/client.key" >> /etc/kafka/secrets/client.properties
+
+                  for f in /etc/kafka/topics/*.yaml; do
+                    topic=$(yq e '.spec.topic' "$f")
+                    partitions=$(yq e '.spec.partitions' "$f")
+                    replication=$(yq e '.spec.replicationFactor' "$f")
+                    acl_principal=$(yq e '.spec.acl.principal' "$f")
+                    acl_operation=$(yq e '.spec.acl.operation' "$f")
+
+                    /opt/bitnami/kafka/bin/kafka-topics.sh \
+                      --bootstrap-server $BOOTSTRAP_SERVER \
+                      --command-config /etc/kafka/secrets/client.properties \
+                      --create \
+                      --if-not-exists \
+                      --topic "$topic" \
+                      --partitions "$partitions" \
+                      --replication-factor "$replication"
+
+                    /opt/bitnami/kafka/bin/kafka-acls.sh \
+                      --bootstrap-server $BOOTSTRAP_SERVER \
+                      --command-config /etc/kafka/secrets/client.properties \
+                      --add --allow-principal "$acl_principal" \
+                      --operation "$acl_operation" \
+                      --topic "$topic"
+                  done
+              env:
+                - name: BOOTSTRAP_SERVER
+                  valueFrom:
+                    configMapKeyRef:
+                      name: kafka-config
+                      key: BOOTSTRAP_SERVER
+              volumeMounts:
+                - name: certs
+                  mountPath: /etc/kafka/secrets
+                - name: crds
+                  mountPath: /etc/kafka/topics
+          restartPolicy: OnFailure
+          volumes:
+            - name: certs
+              secret:
+                secretName: kafka-client-cert
+            - name: crds
+              configMap:
+                name: kafka-config

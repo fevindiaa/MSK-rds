@@ -1,0 +1,37 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: kafkatopics.kafka.myorg.io
+spec:
+  group: kafka.myorg.io
+  names:
+    kind: KafkaTopic
+    listKind: KafkaTopicList
+    plural: kafkatopics
+    singular: kafkatopic
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                topic:
+                  type: string
+                partitions:
+                  type: integer
+                replicationFactor:
+                  type: integer
+                acl:
+                  type: object
+                  properties:
+                    principal:
+                      type: string
+                    operation:
+                      type: string
+

@@ -1,0 +1,10 @@
+apiVersion: kafka.myorg.io/v1alpha1
+kind: KafkaACL
+metadata:
+  name: new-acl
+  namespace: kafka
+spec:
+  topic: poc-topic-ci
+  acl:
+    principal: "User:CN=client-app"
+    operation: "Write"
