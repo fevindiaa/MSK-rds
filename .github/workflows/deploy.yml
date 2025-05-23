@@ -10,7 +10,7 @@ env:
 
 jobs:
   provision-msk:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     environment:
       name: ${{ github.ref_name }}
     steps:
@@ -31,16 +31,31 @@ jobs:
 
       - name: Terraform Init & Apply (MSK)
         run: |
+          echo ${{ github.ref_name }}
           cd terraform-msk/${{ github.ref_name }}
           terraform init \
-          -backend-config="bucket=terraformstatee" \
-          -backend-config="key=msk/${{ steps.env.outputs.env_dir }}/terraform.tfstate" \
-          -backend-config="region=eu-north-1"
-           terraform apply -auto-approve
+            -backend-config="bucket=terraformstatee" \
+            -backend-config="key=msk/${{ github.ref_name }}/terraform.tfstate" \
+            -backend-config="region=eu-north-1"
+          terraform apply -auto-approve
+      - name: Debug Terraform Output
+        run: |
+          cd terraform-msk/${{ github.ref_name }}
+          terraform output    
 
-  apply-kafka:
+      - name: Export Bootstrap Server Output
+        id: tf-output
+        run: |
+          cd terraform-msk/${{ github.ref_name }}
+          BOOTSTRAP=$(terraform output bootstrap_server | tr -d '\r' | tr -d '"')
+          echo "Bootstrap Server: $BOOTSTRAP"
+          echo "BOOTSTRAP_SERVER<<EOF" >> $GITHUB_ENV
+          echo "$BOOTSTRAP" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+  apply-k8s-operator:
     needs: provision-msk
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     environment:
       name: ${{ github.ref_name }}
     steps:
@@ -54,24 +69,72 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Install Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: 1.5.7
-
-      - name: Fetch TLS certs from Secrets Manager
+      - name: Update kubeconfig for EKS
         run: |
-          mkdir -p terraform-kafka/${{ github.ref_name }}/certs
-          SECRET=$(aws secretsmanager get-secret-value --secret-id $SECRET_ID --query SecretString --output text)
-          echo "$SECRET" | jq -r .cert > terraform-kafka/${{ github.ref_name }}/certs/client.crt
-          echo "$SECRET" | jq -r .key > terraform-kafka/${{ github.ref_name }}/certs/client.key
-          echo "$SECRET" | jq -r .ca   > terraform-kafka/${{ github.ref_name }}/certs/ca.pem
+          aws eks update-kubeconfig \
+            --region eu-north-1 \
+            --name kafka-cluster
 
-      - name: Terraform Init & Apply (Kafka)
+      - name: Create Kafka TLS Secret from AWS Secrets Manager
         run: |
-          cd terraform-kafka/${{ github.ref_name }}
-          terraform init
-          terraform apply -auto-approve
+          SECRET=$(aws secretsmanager get-secret-value \
+            --secret-id $SECRET_ID \
+            --region $AWS_REGION \
+            --query SecretString \
+            --output text)
+
+          CERT=$(echo "$SECRET" | jq -r '."client.crt"' | sed 's/\\n/\n/g')
+          KEY=$(echo "$SECRET" | jq -r '."client.key"' | sed 's/\\n/\n/g')
+          CA=$(echo "$SECRET"  | jq -r '."ca.pem"'     | sed 's/\\n/\n/g')
+
+          if [[ "$CERT" == "null" || "$KEY" == "null" || "$CA" == "null" ]]; then
+            echo " One or more cert fields in AWS Secrets Manager are missing or null!"
+            exit 1
+          fi
+
+          echo "$CERT" > client.crt
+          echo "$KEY"  > client.key
+          echo "$CA"   > ca.pem
+
+          cat <<EOF > client.properties
+          security.protocol=SSL
+          ssl.ca.location=/etc/kafka/secrets/ca.pem
+          ssl.certificate.location=/etc/kafka/secrets/client.crt
+          ssl.key.location=/etc/kafka/secrets/client.key
+          EOF
+
+          kubectl create secret generic kafka-client-cert \
+            --namespace kafka \
+            --from-file=ca.pem \
+            --from-file=client.crt \
+            --from-file=client.key \
+            --from-file=client.properties \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Generate Kafka ConfigMap
+        run: |
+          mkdir -p k8s/operator
+          cat <<EOF > k8s/operator/kafka-config.yaml
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+          name: kafka-config
+          namespace: kafka
+          labels:
+          app: kafka-operator
+          data:
+          BOOTSTRAP_SERVER: "${{ env.BOOTSTRAP_SERVER }}"
+          EOF
+
+      - name: Apply Kafka Operator Resources
+        run: |
+          kubectl apply -f k8s/operator/kafka-acl-crd.yaml --validate=false
+          kubectl apply -f k8s/operator/kafka-topic-crds.yaml --validate=false
+          kubectl apply -f k8s/operator/kafka-topic-operator.yaml --validate=false
+
+      - name: Apply Kafka Topics and ACLs
+        run: |
+          kubectl apply -f k8s/topics/
           
   setup-aws-eks:
     name: Setup AWS and EKS
@@ -150,7 +213,7 @@ jobs:
 
       - name: Wait for Job completion
         run: |
-          kubectl wait --for=condition=complete job/terraform-rds-secret-job
+          kubectl wait --for=condition=complete --timeout=2400s job/terraform-rds-secret-job
 
       - name: Get logs from Job
         run: |
