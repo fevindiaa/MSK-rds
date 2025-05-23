@@ -10,7 +10,7 @@ env:
 
 jobs:
   provision-msk:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     environment:
       name: ${{ github.ref_name }}
     steps:
@@ -37,7 +37,7 @@ jobs:
             -backend-config="bucket=terraformstatee" \
             -backend-config="key=msk/${{ github.ref_name }}/terraform.tfstate" \
             -backend-config="region=eu-north-1"
-          terraform apply -auto-approve
+          terraform plan
       - name: Debug Terraform Output
         run: |
           cd terraform-msk/${{ github.ref_name }}
@@ -55,7 +55,7 @@ jobs:
 
   apply-k8s-operator:
     needs: provision-msk
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     environment:
       name: ${{ github.ref_name }}
     steps:
