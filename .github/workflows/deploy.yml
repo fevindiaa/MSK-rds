@@ -136,8 +136,8 @@ jobs:
         run: |
           kubectl apply -f k8s/topics/
           
-  setup-aws-eks:
-    name: Setup AWS and EKS
+  Configure-AWS-EKS:
+    name: Configure AWS EKS
     runs-on: ubuntu-latest
 
     steps:
@@ -168,8 +168,8 @@ jobs:
           name: kubeconfig
           path: kubeconfig
 
-  apply-terraform-job:
-    name: Apply Terraform Kubernetes Job
+  Provision-RDS:
+    name: RDS Provision
     runs-on: ubuntu-latest
     needs: setup-aws-eks
 
