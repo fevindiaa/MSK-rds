@@ -2,7 +2,7 @@ name: MSK & RDS Provision
 
 on:
   push:
-    branches: [dev, staging, main]
+    branches: [dev, staging, main, prod]
 
 env:
   AWS_REGION: eu-north-1
