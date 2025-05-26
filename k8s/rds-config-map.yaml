@@ -59,3 +59,13 @@ data:
     }
 
 ---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rds-config
+data:
+  stage: dev
+  app_name: my_app
+
+---
