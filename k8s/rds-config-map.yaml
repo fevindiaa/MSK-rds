@@ -3,6 +3,8 @@ kind: ConfigMap
 metadata:
   name: terraform-rds-config
 data:
+  stage: dev
+  app_name: my_app
   main.tf: |
     provider "aws" {
       region = var.aws_region
@@ -57,15 +59,5 @@ data:
     terraform {
       backend "s3" {}
     }
-
----
-
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: rds-config
-data:
-  stage: dev
-  app_name: my_app
 
 ---
