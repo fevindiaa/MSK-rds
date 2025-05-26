@@ -52,5 +52,10 @@ data:
       value = aws_db_instance.default.password
       sensitive = true
     }
+  
+  backend.tf: |
+    terraform {
+      backend "s3" {}
+    }
 
 ---
